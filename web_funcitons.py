@@ -26,7 +26,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
-from main import *
+from cups_functions import *
 # this class is responsible for the dates in general
 
 _printers_result = {"Network": [], "USB": []}
