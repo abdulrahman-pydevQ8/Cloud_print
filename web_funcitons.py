@@ -1,3 +1,4 @@
+import csv
 from numpy.lib.utils import byte_bounds
 from starlette.responses import FileResponse
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ import shutil
 from datetime import timedelta
 import shutil
 from DB_fun import *
+from DB_fun import load_printers
 from datetime import timedelta
 import calendar
 from dateutil.relativedelta import relativedelta
@@ -26,7 +28,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
-from cups_functions import *
+from main import *
 # this class is responsible for the dates in general
 
 _printers_result = {"Network": [], "USB": []}
@@ -67,7 +69,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
 def verify_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"leeway": 10})
-        return payload.get("sub")
+        return payload.get("email")
     except JWTError:
         return None
 
@@ -88,6 +90,22 @@ async def startup():
         raw = await get_truly_online_printers()
         _printers_result["Network"] = [format_printer_data(p) for p in raw.get("Network", [])]
         _printers_result["USB"] = [format_printer_data(p) for p in raw.get("USB", [])]
+
+        # Merge offline printers from CSV that weren't found in this scan
+        online_names = {p["name"] for p in raw.get("Network", []) + raw.get("USB", [])}
+        for row in load_printers():
+            if row["name"] not in online_names:
+                offline_entry = {
+                    "id": row["name"],
+                    "name": row["name"],
+                    "location": "Kuwait Hub",
+                    "status": "offline",
+                    "ink": {"cyan": 0, "magenta": 0, "yellow": 0, "black": 0},
+                    "paper": {"sheets": 0, "capacity": 100, "size": "A4"},
+                    "jobs": []
+                }
+                _printers_result[row["type"]].append(offline_entry)
+
         print("Startup scan done:", _printers_result)
     except Exception as e:
         print("Startup scan failed:", e)
@@ -272,6 +290,60 @@ async def read_root():
     return FileResponse("homepage.html")
 
 
+@app.get("/admin", response_class=FileResponse)
+async def admin_page():
+    return FileResponse("admin.html")
+
+
+@app.get("/check-access")
+async def check_access(token: str = Depends(oauth2_scheme)):
+    email = verify_token(token) if token else None
+    if not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    with open(USERS_CSV, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("email") == email:
+                return {"access": row.get("access", "True") != "False"}
+    # user not in CSV yet — treat as granted
+    return {"access": True}
+
+
+@app.get("/admin/users")
+async def admin_users(token: str = Depends(oauth2_scheme)):
+    email = verify_token(token) if token else None
+    if email != "darkiiq8@gmail.com":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    with open(USERS_CSV, newline="") as f:
+        users = [r for r in csv.DictReader(f) if r.get("email")]
+    return {"users": users}
+
+
+class AccessUpdate(BaseModel):
+    granted: bool
+
+@app.patch("/admin/users/{user_id}/access")
+async def update_user_access(user_id: str, body: AccessUpdate, token: str = Depends(oauth2_scheme)):
+    email = verify_token(token) if token else None
+    if email != "darkiiq8@gmail.com":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    set_user_access(user_id, body.granted)
+    return {"status": "ok", "user_id": user_id, "access": body.granted}
+
+
+def _trim_temp(max_files: int = 5):
+    """Keep only the most recent `max_files` files in TEMP_DIR."""
+    files = sorted(
+        [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR)
+         if os.path.isfile(os.path.join(TEMP_DIR, f))],
+        key=os.path.getmtime
+    )
+    for old in files[:-max_files] if len(files) > max_files else []:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+
 @app.post("/storefile")
 async def storefile(file: UploadFile = File(...)):
 
@@ -282,6 +354,7 @@ async def storefile(file: UploadFile = File(...)):
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        _trim_temp()
         print(f"pass - Saved {file.filename} to {file_path}")
         # 4. Return a simple success message
         return {
@@ -300,11 +373,34 @@ async def printfile(file: UploadFile = File(...), printer_name: str = Form(...),
             f.write(await file.read())
 
         job(file_path, printer_name, color)
+        _trim_temp()
         return {
             "status": "success",
             "message": "File sent to printer",
             "filename": file.filename,
         }
+
+
+@app.get("/admin/recent-files")
+async def admin_recent_files(token: str = Depends(oauth2_scheme)):
+    email = verify_token(token) if token else None
+    if email != "darkiiq8@gmail.com":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    files = sorted(
+        [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR)
+         if os.path.isfile(os.path.join(TEMP_DIR, f))],
+        key=os.path.getmtime,
+        reverse=True
+    )[:5]
+    result = []
+    for fp in files:
+        stat = os.stat(fp)
+        result.append({
+            "filename": os.path.basename(fp),
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        })
+    return {"files": result}
 
 
 
