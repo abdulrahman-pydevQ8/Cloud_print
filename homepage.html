@@ -252,6 +252,7 @@
     .logo-icon { width: 24px; height: 24px; font-size: 0.55rem; }
     .btn-text.docs-btn { display: none; }
     .user-name { display: none; }
+    .logo-text { display: none; }
 
     .app-container { flex-direction: column; overflow: visible; min-height: 0; }
 
@@ -336,11 +337,24 @@
 </head>
 <body>
 
+<!-- RESTRICTED OVERLAY -->
+<div id="restrictedOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#07090f;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;">
+  <div style="font-family:'Space Mono',monospace;font-size:0.7rem;letter-spacing:0.2em;color:#ff4d6a;text-transform:uppercase;margin-bottom:24px;">Access Denied</div>
+  <div style="font-size:3.5rem;font-weight:800;color:#ffffff;font-family:'Syne',sans-serif;letter-spacing:-0.02em;line-height:1.1;max-width:600px;">You are restricted<br>from printing.</div>
+  <div style="margin-top:20px;font-family:'Space Mono',monospace;font-size:0.78rem;color:#6b7a8d;max-width:420px;line-height:1.7;">Your account has been restricted by an administrator. Contact support if you believe this is a mistake.</div>
+  <button onclick="localStorage.removeItem('token');window.location.reload();" style="margin-top:40px;background:none;border:1px solid #1e2a3a;color:#6b7a8d;font-family:'Space Mono',monospace;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;padding:10px 24px;cursor:pointer;">Sign Out</button>
+</div>
+
 <!-- HEADER -->
 <header>
   <div class="logo">
-    <div class="logo-icon">CP</div>
-    Cloud<span>-Printing</span>
+    <div class="logo-icon">
+      <svg width="17" height="14" viewBox="0 0 17 14" fill="none" aria-hidden="true">
+        <path d="M13.2 5.6A4.7 4.7 0 0 0 4.4 6.4 3.1 3.1 0 1 0 4 12.6h9.2a3.1 3.1 0 0 0 0-6.2c0-.28-.01-.54-.02-.8Z" fill="currentColor" opacity="0.35"/>
+        <path d="M8.5 13V8.5m0 0L6.5 10.5m2-2 2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <span class="logo-text">Cloud<span>-Printing</span></span>
   </div>
   <div class="header-actions">
     <button class="btn-text docs-btn" onclick="alert('Docs coming soon')">Documentation</button>
@@ -348,10 +362,11 @@
     <div class="user-profile" id="userPill" style="display:none;">
       <div class="avatar" id="avatarContainer">
         <span id="userAvatarFallback" style="display:none;"></span>
-        <img id="userAvatar" src="" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:none;">
+        <img id="userAvatar" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:none;">
       </div>
       <span class="user-name" id="userName"></span>
     </div>
+    <button class="btn-text" id="adminBtn" onclick="window.location.href='/admin'" style="display:none;color:var(--cyan);border:1px solid var(--cyan);padding:4px 12px;">Admin</button>
     <button class="btn-text" id="logoutBtn" onclick="logout()" style="display:none;color:var(--muted);">Sign Out</button>
   </div>
 </header>
@@ -549,6 +564,18 @@ function initAuth() {
       const fallback = document.getElementById('userAvatarFallback');
       if (user.picture) { img.src = user.picture; img.style.display = 'block'; fallback.style.display = 'none'; }
       else { fallback.textContent = user.name.charAt(0).toUpperCase(); fallback.style.display = 'block'; img.style.display = 'none'; }
+      if (user.email === 'darkiiq8@gmail.com') {
+        document.getElementById('adminBtn').style.display = 'block';
+      }
+      // Check server-side access status
+      fetch('/check-access', { headers: { 'Authorization': 'Bearer ' + token } })
+        .then(r => r.json())
+        .then(d => {
+          if (d.access === false) {
+            document.getElementById('restrictedOverlay').style.display = 'flex';
+          }
+        })
+        .catch(() => {});
     }
   } catch(e) { localStorage.removeItem("token"); }
 }
@@ -602,7 +629,7 @@ async function placeOrder() {
   formData.append('printer_name', selectedPrinter || '');
   try {
     const res = await fetch('/printfile', { method: 'POST', body: formData });
-    if (res.ok) { showToast('🎉 Order placed!'); removeFile(); }
+    if (res.ok) { showToast('✅ Job sent — check the printer tray!'); removeFile(); }
     else { showToast('❌ Server Error'); btn.disabled = false; btn.textContent = "Print Now"; }
   } catch(e) { showToast('❌ Backend Offline'); btn.disabled = false; btn.textContent = "Print Now"; }
 }
