@@ -7,6 +7,7 @@ from pyipp import IPP, Printer
 from zeroconf import ServiceBrowser, Zeroconf
 import os
 import cups
+from DB_fun import save_printers
 
 
 class PrinterScanner:
@@ -74,6 +75,7 @@ async def get_truly_online_printers():
             except:
                 continue
 
+    save_printers(network_results, usb_found)
     return {"Network": network_results, "USB": usb_found}
 import cups
 
