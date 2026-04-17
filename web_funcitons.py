@@ -28,7 +28,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
-from main import *
+from cups_functions import *
 # this class is responsible for the dates in general
 
 _printers_result = {"Network": [], "USB": []}
@@ -83,32 +83,6 @@ app = FastAPI()
 '''app.include_router(printers_router)
 '''
 
-@app.on_event("startup")
-async def startup():
-    global _printers_result
-    try:
-        raw = await get_truly_online_printers()
-        _printers_result["Network"] = [format_printer_data(p) for p in raw.get("Network", [])]
-        _printers_result["USB"] = [format_printer_data(p) for p in raw.get("USB", [])]
-
-        # Merge offline printers from CSV that weren't found in this scan
-        online_names = {p["name"] for p in raw.get("Network", []) + raw.get("USB", [])}
-        for row in load_printers():
-            if row["name"] not in online_names:
-                offline_entry = {
-                    "id": row["name"],
-                    "name": row["name"],
-                    "location": "Kuwait Hub",
-                    "status": "offline",
-                    "ink": {"cyan": 0, "magenta": 0, "yellow": 0, "black": 0},
-                    "paper": {"sheets": 0, "capacity": 100, "size": "A4"},
-                    "jobs": []
-                }
-                _printers_result[row["type"]].append(offline_entry)
-
-        print("Startup scan done:", _printers_result)
-    except Exception as e:
-        print("Startup scan failed:", e)
 
 app.add_middleware(
     CORSMiddleware,
@@ -124,7 +98,7 @@ class Data(BaseModel):
     e_num: int
 
 
-# In your FastAPI backend (e.g., main.py or webfunctions.py)
+# In your FastAPI backend (e.g., cups_functions.py or webfunctions.py)
 
 def format_printer_data(p_dict):
     ink = {"cyan": 0, "magenta": 0, "yellow": 0, "black": 0}
@@ -158,7 +132,6 @@ def format_printer_data(p_dict):
     return {
         "id": p_dict.get("name", "Unknown"),
         "name": p_dict.get("name", "Unknown"),
-        "location": "Kuwait Hub",
         "status": "online" if isinstance(raw, dict) else "offline",
         "ink": ink,
         "paper": {"sheets": 0, "capacity": 100, "size": "A4"},
@@ -166,9 +139,57 @@ def format_printer_data(p_dict):
     }
 
 
+@app.on_event("startup")
+async def startup():
+    global _printers_result
+    try:
+        raw = await get_truly_online_printers()
+        _printers_result["Network"] = [format_printer_data(p) for p in raw.get("Network", [])]
+        _printers_result["USB"] = [format_printer_data(p) for p in raw.get("USB", [])]
+        online_names = {p["name"] for p in raw.get("Network", []) + raw.get("USB", [])}
+        for row in load_printers():
+            if row["name"] not in online_names:
+                _printers_result[row["type"]].append({
+                    "id": row["name"], "name": row["name"], "status": "offline",
+                    "ink": {"cyan": 0, "magenta": 0, "yellow": 0, "black": 0},
+                    "paper": {"sheets": 0, "capacity": 100, "size": "A4"}, "jobs": []
+                })
+        print("=== Discovered Printers ===")
+        for p in _printers_result["Network"]:
+            print(f"[Network] {p['name']} | {p['status']} | ink: {p['ink']}")
+        for p in _printers_result["USB"]:
+            print(f"[USB] {p['name']} | {p['status']} | ink: {p['ink']}")
+        if not _printers_result["Network"] and not _printers_result["USB"]:
+            print("No printers found.")
+
+    except Exception as e:
+        print("Startup scan failed:", e)
+
+
 @app.get("/printers")
 async def read_printers():
     return {**_printers_result, "error": None}
+
+
+@app.get("/rescan")
+async def rescan():
+    global _printers_result
+    try:
+        raw = await get_truly_online_printers()
+        _printers_result["Network"] = [format_printer_data(p) for p in raw.get("Network", [])]
+        _printers_result["USB"] = [format_printer_data(p) for p in raw.get("USB", [])]
+        online_names = {p["name"] for p in raw.get("Network", []) + raw.get("USB", [])}
+        for row in load_printers():
+            if row["name"] not in online_names:
+                _printers_result[row["type"]].append({
+                    "id": row["name"], "name": row["name"], "status": "offline",
+                    "ink": {"cyan": 0, "magenta": 0, "yellow": 0, "black": 0},
+                    "paper": {"sheets": 0, "capacity": 100, "size": "A4"}, "jobs": []
+                })
+        print(_printers_result)
+        return {**_printers_result, "error": None}
+    except Exception as e:
+        return {"Network": [], "USB": [], "error": str(e)}
 
 @app.get("/auth")
 async def auth():
@@ -249,7 +270,7 @@ async def authted(code: str = None, error: str = None):
             "name": id_info.get("name", ""),
             "picture": id_info.get("picture", "")
         }'''
-        '''if user_info["email"] == 'darkiiq8@gmail.com':
+        '''if user_info["email"] == 'abdelrahman.nawaf.04@gmail.com':
             print('this has been axxeiejeoih')
             path = os.path.join(os.path.dirname(__file__), "templates", "admin.html")
             html_path = Path(path).read_text(encoding="utf-8")
@@ -311,7 +332,7 @@ async def check_access(token: str = Depends(oauth2_scheme)):
 @app.get("/admin/users")
 async def admin_users(token: str = Depends(oauth2_scheme)):
     email = verify_token(token) if token else None
-    if email != "darkiiq8@gmail.com":
+    if email != "abdelrahman.nawaf.04@gmail.com":
         raise HTTPException(status_code=403, detail="Forbidden")
     with open(USERS_CSV, newline="") as f:
         users = [r for r in csv.DictReader(f) if r.get("email")]
@@ -324,7 +345,7 @@ class AccessUpdate(BaseModel):
 @app.patch("/admin/users/{user_id}/access")
 async def update_user_access(user_id: str, body: AccessUpdate, token: str = Depends(oauth2_scheme)):
     email = verify_token(token) if token else None
-    if email != "darkiiq8@gmail.com":
+    if email != "abdelrahman.nawaf.04@gmail.com":
         raise HTTPException(status_code=403, detail="Forbidden")
     set_user_access(user_id, body.granted)
     return {"status": "ok", "user_id": user_id, "access": body.granted}
@@ -384,7 +405,7 @@ async def printfile(file: UploadFile = File(...), printer_name: str = Form(...),
 @app.get("/admin/recent-files")
 async def admin_recent_files(token: str = Depends(oauth2_scheme)):
     email = verify_token(token) if token else None
-    if email != "darkiiq8@gmail.com":
+    if email != "abdelrahman.nawaf.04@gmail.com":
         raise HTTPException(status_code=403, detail="Forbidden")
     files = sorted(
         [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR)
@@ -408,7 +429,7 @@ async def admin_recent_files(token: str = Depends(oauth2_scheme)):
 
 '''@app.post('/admin')
 async def admin(admin_id:servefile):
-    if admin_id == 'darkiiq8@gmail.com':
+    if admin_id == 'abdelrahman.nawaf.04@gmail.com':
         return 'meow'''
 
 
