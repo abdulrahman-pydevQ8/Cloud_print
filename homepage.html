@@ -474,6 +474,737 @@
     <div class="controls">
       <input class="search-input" id="statusSearch" placeholder="Search printers…" oninput="renderTable()">
       <span class="last-sync" id="lastSync">Synced just now</span>
+      <button class="refresh-btn" onclick="refreshAll(true)"><span class="refresh-icon">↻</span> Refresh</button>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Printer</th>
+            <th>Status</th>
+            <th>Ink  C · M · Y · K</th>
+            <th>Jobs</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- MOBILE TAB BAR -->
+<div class="mobile-tabs" id="mobileTabs">
+  <div class="mobile-tabs-inner">
+    <button class="mobile-tab" onclick="switchTab('print')" id="tabPrint">
+      <span class="mobile-tab-icon">🖨</span>
+      Print
+    </button>
+    <button class="mobile-tab active" onclick="switchTab('monitor')" id="tabMonitor">
+      <span class="mobile-tab-icon">📊</span>
+      Monitor
+    </button>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span id="toastMsg"></span></div>
+
+<script>
+/* =========================================================
+   MOBILE TAB SWITCHING
+   ========================================================= */
+let activeTab = 'monitor';
+function switchTab(tab) {
+  activeTab = tab;
+  const sidebar = document.getElementById('sidebarPanel');
+  const monitor = document.getElementById('monitorPanel');
+  document.getElementById('tabPrint').classList.toggle('active', tab === 'print');
+  document.getElementById('tabMonitor').classList.toggle('active', tab === 'monitor');
+  if (tab === 'print') {
+    sidebar.classList.remove('mobile-hidden');
+    monitor.classList.add('mobile-hidden');
+  } else {
+    sidebar.classList.add('mobile-hidden');
+    monitor.classList.remove('mobile-hidden');
+  }
+}
+// Set initial state on mobile
+function initMobileLayout() {
+  if (window.innerWidth <= 700) {
+    switchTab('monitor');
+  }
+}
+window.addEventListener('resize', () => {
+  const sidebar = document.getElementById('sidebarPanel');
+  const monitor = document.getElementById('monitorPanel');
+  if (window.innerWidth > 700) {
+    sidebar.classList.remove('mobile-hidden');
+    monitor.classList.remove('mobile-hidden');
+  } else {
+    switchTab(activeTab);
+  }
+});
+initMobileLayout();
+
+/* =========================================================
+   AUTH
+   ========================================================= */
+function initAuth() {
+  const token = localStorage.getItem("token");
+  if (!token) return;
+  try {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const user = JSON.parse(window.atob(base64));
+    if (user && user.name) {
+      document.getElementById('signInBtn').style.display = 'none';
+      document.getElementById('userPill').style.display = 'flex';
+      document.getElementById('logoutBtn').style.display = 'block';
+      document.getElementById('userName').textContent = user.name;
+      const img = document.getElementById('userAvatar');
+      const fallback = document.getElementById('userAvatarFallback');
+      if (user.picture) { img.src = user.picture; img.style.display = 'block'; fallback.style.display = 'none'; }
+      else { fallback.textContent = user.name.charAt(0).toUpperCase(); fallback.style.display = 'block'; img.style.display = 'none'; }
+      if (user.email === 'abdelrahman.nawaf.04@gmail.com') {
+        document.getElementById('adminBtn').style.display = 'block';
+      }
+      // Check server-side access status
+      fetch('/check-access', { headers: { 'Authorization': 'Bearer ' + token } })
+        .then(r => r.json())
+        .then(d => {
+          if (d.access === false) {
+            document.getElementById('restrictedOverlay').style.display = 'flex';
+          }
+        })
+        .catch(() => {});
+    }
+  } catch(e) { localStorage.removeItem("token"); }
+}
+function logout() { localStorage.removeItem("token"); window.location.reload(); }
+initAuth();
+
+/* =========================================================
+   DRAG & DROP
+   ========================================================= */
+function onDragOver(e) { e.preventDefault(); document.getElementById('dropzone').style.borderColor='var(--cyan)'; }
+function onDragLeave()  { document.getElementById('dropzone').style.borderColor=''; }
+function onDrop(e)      { e.preventDefault(); onDragLeave(); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }
+
+/* =========================================================
+   FILE HANDLING
+   ========================================================= */
+let qty = 1;
+function changeQty(d) { qty = Math.max(1, qty+d); document.getElementById('qtyDisplay').textContent = qty; }
+
+document.getElementById('fileInput').addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = `${(file.size/1024).toFixed(1)} KB`;
+  document.getElementById('filePreview').classList.add('visible');
+  document.getElementById('dropzone').style.display = 'none';
+  document.getElementById('orderBtn').disabled = false;
+  document.getElementById('orderBtn').textContent = selectedPrinter ? "Print Now" : "Select a Printer";
+}
+
+function removeFile() {
+  document.getElementById('fileInput').value = '';
+  document.getElementById('filePreview').classList.remove('visible');
+  document.getElementById('dropzone').style.display = '';
+  document.getElementById('orderBtn').disabled = true;
+  document.getElementById('orderBtn').textContent = "Select File & Printer";
+}
+
+async function placeOrder() {
+  const file = document.getElementById('fileInput').files[0];
+  if (!file) return;
+  if (!selectedPrinter) { showToast('❌ Select a printer first'); return; }
+  const btn = document.getElementById('orderBtn');
+  btn.disabled = true; btn.textContent = "Processing…";
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('qty', qty);
+  formData.append('paper', document.getElementById('paperSize').value);
+  formData.append('color', document.getElementById('colorMode').value);
+  formData.append('duplex', document.getElementById('duplexToggle').classList.contains('on'));
+  formData.append('printer_name', selectedPrinter || '');
+  try {
+    const res = await fetch('/printfile', { method: 'POST', body: formData });
+    if (res.ok) { showToast('✅ Job sent — check the printer tray!'); removeFile(); }
+    else { showToast('❌ Server Error'); btn.disabled = false; btn.textContent = "Print Now"; }
+  } catch(e) { showToast('❌ Backend Offline'); btn.disabled = false; btn.textContent = "Print Now"; }
+}
+
+/* =========================================================
+   PRINTER PICKER
+   ========================================================= */
+let printerList = [];
+const PRINTER_COLOR = { online:'var(--green)', busy:'var(--cyan)', warning:'var(--yellow)', offline:'var(--red)' };
+let selectedPrinter = null;
+
+function filterPrinters(q) { renderPrinterList(q.toLowerCase()); }
+function renderPrinterList(q='') {
+  const list = document.getElementById('printerList');
+  if (!printerList.length) {
+    list.innerHTML = `<div style="font-family:'Space Mono',monospace;font-size:0.65rem;color:var(--muted);padding:20px 0;text-align:center;">// Waiting for API data…</div>`;
+    return;
+  }
+  const filtered = printerList.filter(k => !q || k.name.toLowerCase().includes(q) || k.id.toLowerCase().includes(q));
+  list.innerHTML = filtered.map(k => `
+    <div class="printer-item ${selectedPrinter===k.id?'selected':''}"
+      onclick="selectPrinter('${k.id}')" ${k.status==='offline'?'style="opacity:0.4;pointer-events:none;"':''}>
+      <div class="printer-item-left">
+        <div class="printer-dot" style="background:${PRINTER_COLOR[k.status]};box-shadow:0 0 5px ${PRINTER_COLOR[k.status]}66;"></div>
+        <div>
+          <div class="printer-name">${k.name}</div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+function selectPrinter(id) {
+  selectedPrinter = id;
+  if (document.getElementById('filePreview').classList.contains('visible')) {
+    document.getElementById('orderBtn').disabled = false;
+    document.getElementById('orderBtn').textContent = "Print Now";
+  }
+  renderPrinterList();
+}
+renderPrinterList();
+
+/* =========================================================
+   PRINTER STATUS TABLE
+   ========================================================= */
+let printers = [];
+
+const INK = {
+  cyan:    { fill:'linear-gradient(to top,#00b8cc,#00e5ff)' },
+  magenta: { fill:'linear-gradient(to top,#cc0080,#ff3dac)' },
+  yellow:  { fill:'linear-gradient(to top,#ccaa00,#ffe03d)' },
+  black:   { fill:'linear-gradient(to top,#6b7a8d,#c8d0dc)' },
+};
+const inkClass = p => p<=15?'low':p<=30?'mid':'ok';
+const STATUS_COLOR = { online:'var(--green)', busy:'var(--cyan)', warning:'var(--yellow)', offline:'var(--red)' };
+let currentFilter = 'all';
+
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll('.sum-pill').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderTable();
+}
+
+function buildTubes(ink) {
+  return Object.entries(ink).map(([k,v]) => {
+    const uid = Math.random().toString(36).slice(2,8);
+    return `<div class="ink-item">
+      <div class="ink-tube"><div class="ink-tube-fill" id="itf-${uid}" data-pct="${v}" style="background:${INK[k].fill};height:0%;"></div></div>
+      <div class="ink-tube-pct ${inkClass(v)}">${v}</div>
+      <div class="ink-tube-label">${k[0].toUpperCase()}</div>
+    </div>`;
+  }).join('');
+}
+
+function buildJobs(jobs) {
+  if (!jobs.length) return `<span class="no-jobs">—</span>`;
+  return jobs.slice(0,3).map(j => {
+    const short = j.name.length > 20 ? j.name.slice(0,18)+'…' : j.name;
+    return `<div class="job-chip ${j.status}">${j.status==='printing'?'▶ ':''}${short}</div>`;
+  }).join('');
+}
+
+function renderTable() {
+  const search = document.getElementById('statusSearch').value.toLowerCase();
+  const body = document.getElementById('tableBody');
+
+  document.getElementById('sumAll').textContent = printers.length;
+  ['online','busy','warning','offline'].forEach(s => {
+    document.getElementById('sum'+s[0].toUpperCase()+s.slice(1)).textContent = printers.filter(p=>p.status===s).length;
+  });
+
+  const filtered = printers.filter(p => {
+    const mf = currentFilter==='all' || p.status===currentFilter;
+    const ms = !search || [p.name,p.id].some(x=>x.toLowerCase().includes(search));
+    return mf && ms;
+  });
+
+  if (!filtered.length) {
+    body.innerHTML = `<tr class="empty-row"><td colspan="4">// NO PRINTERS MATCH</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = filtered.map((p,i) => `
+    <tr style="animation-delay:${i*0.04}s">
+      <td>
+        <div class="td-printer">
+          <div class="status-bar-v" style="background:${STATUS_COLOR[p.status]};box-shadow:0 0 5px ${STATUS_COLOR[p.status]}55;"></div>
+          <div><div class="p-name">${p.name}</div></div>
+        </div>
+      </td>
+      <td><div class="status-chip ${p.status}"><span class="chip-dot"></span>${p.status.toUpperCase()}</div></td>
+      <td><div class="ink-group">${buildTubes(p.ink)}</div></td>
+      <td class="jobs-cell">${buildJobs(p.jobs)}</td>
+    </tr>
+  `).join('');
+
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.ink-tube-fill[data-pct]').forEach(el => {
+      setTimeout(() => { el.style.height = el.dataset.pct + '%'; }, 80);
+    });
+  });
+}
+
+async function refreshAll(rescan = false) {
+  try {
+    const res = await fetch(rescan ? '/rescan' : '/printers');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.error) {
+        showToast(`⚠️ ${data.error}`);
+        printers = [];
+      } else {
+        printers = [...(data.Network || []), ...(data.USB || [])];
+        printerList = printers;
+        renderPrinterList();
+      }
+      renderTable();
+      const t = new Date();
+      document.getElementById('lastSync').textContent = `Synced ${t.toLocaleTimeString()}`;
+      showToast('✓ Refreshed');
+    }
+  } catch(e) {
+    console.error("Frontend Logic Error:", e);
+    showToast('❌ Backend Offline');
+  }
+}
+
+/* =========================================================
+   TOAST
+   ========================================================= */
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+/* =========================================================
+   INIT
+   ========================================================= */
+renderTable();
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>  }
+  .dropzone:hover { border-color: var(--cyan); background: rgba(0,229,255,0.03); }
+  .drop-icon { font-size: 24px; background: var(--cyan-dim); width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+  .file-preview {
+    display: none; align-items: center; gap: 12px; background: var(--bg2);
+    border: 1px solid var(--border); padding: 10px 14px; margin-top: 10px;
+  }
+  .file-preview.visible { display: flex; }
+
+  /* Form Elements */
+  .opt-label { display: block; font-family: 'Space Mono', monospace; font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .form-group { margin-bottom: 0; }
+  .select-box {
+    width: 100%; background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+    padding: 9px 10px; font-family: 'Syne', sans-serif; font-size: 0.82rem;
+    outline: none; cursor: pointer; appearance: none; transition: border-color 0.2s;
+  }
+  .select-box:focus { border-color: var(--cyan); }
+  .qty-control { display: flex; align-items: center; }
+  .qty-btn { width: 36px; height: 36px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); cursor: pointer; font-size: 1rem; transition: border-color 0.2s; }
+  .qty-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+  .qty-display { width: 48px; height: 36px; border: 1px solid var(--border); border-left: none; border-right: none; display: flex; align-items: center; justify-content: center; font-family: 'Space Mono', monospace; font-size: 0.85rem; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+  .toggle { width: 38px; height: 20px; background: var(--border); border-radius: 10px; position: relative; cursor: pointer; transition: background 0.2s; flex-shrink: 0; }
+  .toggle.on { background: var(--cyan); }
+  .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; background: var(--white); border-radius: 50%; transition: transform 0.2s; }
+  .toggle.on::after { transform: translateX(18px); }
+
+  /* Printer List */
+  .printer-search {
+    width: 100%; background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 12px; font-family: 'Space Mono', monospace; font-size: 0.7rem;
+    outline: none; transition: border-color 0.2s; margin-bottom: 8px;
+  }
+  .printer-search:focus { border-color: var(--cyan); }
+  .printer-search::placeholder { color: var(--muted); }
+  .printer-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+  .printer-list::-webkit-scrollbar { width: 3px; }
+  .printer-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .printer-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 10px; border: 1px solid var(--border); background: var(--bg2);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .printer-item:hover { border-color: var(--cyan); }
+  .printer-item.selected { border-color: var(--cyan); background: var(--cyan-dim); }
+  .printer-item-left { display: flex; align-items: center; gap: 8px; }
+  .printer-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .printer-name { font-size: 0.8rem; font-weight: 700; }
+  .printer-loc { font-family: 'Space Mono', monospace; font-size: 0.55rem; color: var(--muted); margin-top: 1px; }
+  .printer-dist { font-family: 'Space Mono', monospace; font-size: 0.58rem; color: var(--muted); }
+  .printer-item.selected .printer-dist { color: var(--cyan); }
+
+  .btn-submit {
+    width: 100%; background: var(--cyan); color: var(--bg); border: none; padding: 12px;
+    font-family: 'Syne', sans-serif; font-weight: 800; font-size: 0.85rem;
+    letter-spacing: 0.04em; cursor: pointer; margin-top: 14px; transition: all 0.25s;
+    clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  }
+  .btn-submit:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; clip-path: none; }
+  .btn-submit:not(:disabled):hover { background: var(--white); }
+
+  /* ── MAIN CONTENT ── */
+  .main-content { flex: 1; display: flex; flex-direction: column; background: var(--bg); padding: 22px 28px; overflow: hidden; }
+  .content-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+  .page-title { font-size: 1.05rem; font-weight: 800; margin-bottom: 2px; }
+  .page-subtitle { font-family: 'Space Mono', monospace; font-size: 0.68rem; color: var(--muted); }
+  .live-badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(0,214,143,0.08); border: 1px solid rgba(0,214,143,0.25); color: var(--green); padding: 3px 10px; font-family: 'Space Mono', monospace; font-size: 0.58rem; letter-spacing: 0.1em; margin-left: 10px; }
+  .live-dot { width: 5px; height: 5px; background: var(--green); border-radius: 50%; animation: pulse 1.5s infinite; }
+
+  /* Filters */
+  .summary-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .sum-pill { display: flex; align-items: center; gap: 5px; padding: 5px 12px; border: 1px solid var(--border); background: var(--surface); font-family: 'Space Mono', monospace; font-size: 0.65rem; cursor: pointer; transition: all 0.15s; }
+  .sum-pill:hover { border-color: var(--cyan); }
+  .sum-pill.active { border-color: var(--cyan); background: var(--cyan-dim); }
+  .sum-num { font-weight: 700; }
+  .sum-num.green { color: var(--green); } .sum-num.yellow { color: var(--yellow); } .sum-num.red { color: var(--red); } .sum-num.cyan { color: var(--cyan); }
+  .sum-label { color: var(--muted); }
+
+  /* Controls bar */
+  .controls { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .search-input { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 7px 12px; font-family: 'Space Mono', monospace; font-size: 0.7rem; outline: none; width: 200px; transition: border-color 0.2s; }
+  .search-input:focus { border-color: var(--cyan); }
+  .search-input::placeholder { color: var(--muted); }
+  .refresh-btn { background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 7px 14px; font-family: 'Space Mono', monospace; font-size: 0.66rem; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .refresh-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+  .refresh-icon { display: inline-block; transition: transform 0.5s; }
+  .refresh-btn:hover .refresh-icon { transform: rotate(180deg); }
+  .last-sync { font-family: 'Space Mono', monospace; font-size: 0.6rem; color: var(--muted); white-space: nowrap; }
+
+  /* Table */
+  .table-container { background: var(--surface); border: 1px solid var(--border); flex: 1; overflow: auto; min-height: 0; }
+  .table-container::-webkit-scrollbar { width: 4px; height: 4px; }
+  .table-container::-webkit-scrollbar-track { background: transparent; }
+  .table-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  thead { position: sticky; top: 0; background: var(--bg2); z-index: 10; box-shadow: 0 1px 0 var(--border); }
+  th { padding: 10px 16px; font-family: 'Space Mono', monospace; font-size: 0.58rem; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase; font-weight: 400; white-space: nowrap; }
+  td { padding: 11px 16px; border-bottom: 1px solid var(--border); font-size: 0.85rem; vertical-align: middle; }
+  tbody tr { transition: background 0.15s; animation: fadeIn 0.3s ease both; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+  /* Table components */
+  .td-printer { display: flex; align-items: center; gap: 10px; min-width: 160px; }
+  .status-bar-v { width: 3px; height: 32px; border-radius: 2px; flex-shrink: 0; }
+  .p-name { font-size: 0.85rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  .p-loc { font-family: 'Space Mono', monospace; font-size: 0.58rem; color: var(--muted); margin-top: 1px; }
+  .status-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-family: 'Space Mono', monospace; font-size: 0.58rem; letter-spacing: 0.08em; border: 1px solid; white-space: nowrap; }
+  .status-chip.online  { color: var(--green);  border-color: rgba(0,214,143,0.35);  background: rgba(0,214,143,0.07); }
+  .status-chip.warning { color: var(--yellow); border-color: rgba(255,209,102,0.35); background: rgba(255,209,102,0.07); }
+  .status-chip.offline { color: var(--red);    border-color: rgba(255,77,106,0.35);  background: rgba(255,77,106,0.07); }
+  .status-chip.busy    { color: var(--cyan);   border-color: rgba(0,229,255,0.35);   background: rgba(0,229,255,0.07); }
+  .chip-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+  .status-chip.busy .chip-dot { animation: pulse 1s infinite; }
+
+  .paper-cell { min-width: 80px; }
+  .paper-num { font-family: 'Space Mono', monospace; font-size: 0.78rem; font-weight: 700; }
+  .paper-num.low { color: var(--red); } .paper-num.mid { color: var(--yellow); }
+  .paper-sub { font-family: 'Space Mono', monospace; font-size: 0.55rem; color: var(--muted); margin-top: 1px; }
+  .paper-mini-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 4px; overflow: hidden; width: 50px; }
+  .paper-mini-fill { height: 100%; border-radius: 2px; transition: width 0.8s ease; }
+
+  .ink-group { display: flex; align-items: flex-end; gap: 5px; }
+  .ink-item { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .ink-tube { width: 14px; height: 30px; background: var(--bg); border: 1px solid var(--border); border-radius: 2px; position: relative; overflow: hidden; }
+  .ink-tube-fill { position: absolute; bottom: 0; left: 0; right: 0; transition: height 0.8s cubic-bezier(0.34,1.1,0.64,1); }
+  .ink-tube-pct { font-family: 'Space Mono', monospace; font-size: 0.5rem; }
+  .ink-tube-pct.low { color: var(--red); font-weight: 700; } .ink-tube-pct.mid { color: var(--yellow); } .ink-tube-pct.ok { color: var(--muted); }
+  .ink-tube-label { font-family: 'Space Mono', monospace; font-size: 0.45rem; color: var(--muted); }
+
+  .jobs-cell { min-width: 140px; max-width: 200px; }
+  .job-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; font-family: 'Space Mono', monospace; font-size: 0.56rem; border: 1px solid; margin-bottom: 2px; white-space: nowrap; overflow: hidden; max-width: 100%; text-overflow: ellipsis; }
+  .job-chip.printing { color: var(--cyan); border-color: rgba(0,229,255,0.3); animation: blink 1.4s step-end infinite; }
+  .job-chip.queued   { color: var(--muted); border-color: var(--border); }
+  .job-chip.done     { color: var(--green); border-color: rgba(0,214,143,0.25); }
+  .no-jobs { font-family: 'Space Mono', monospace; font-size: 0.62rem; color: var(--border); }
+  .empty-row td { padding: 40px; text-align: center; font-family: 'Space Mono', monospace; font-size: 0.72rem; color: var(--muted); }
+
+  /* ── TOAST ── */
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--cyan); color: var(--text); padding: 12px 20px; z-index: 999; transform: translateY(60px); opacity: 0; transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); font-family: 'Space Mono', monospace; font-size: 0.76rem; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+
+  /* ── MOBILE TAB NAVIGATION ── */
+  .mobile-tabs {
+    display: none;
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+    background: rgba(7,9,15,0.96); backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    height: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
+  .mobile-tabs-inner {
+    display: flex; height: 100%;
+  }
+  .mobile-tab {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; background: none; border: none; color: var(--muted);
+    font-family: 'Space Mono', monospace; font-size: 0.55rem; letter-spacing: 0.05em;
+    text-transform: uppercase; cursor: pointer; transition: color 0.2s;
+    position: relative; padding: 12px 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mobile-tab.active { color: var(--cyan); }
+  .mobile-tab.active::before {
+    content: ''; position: absolute; top: 0; left: 20%; right: 20%;
+    height: 2px; background: var(--cyan);
+  }
+  .mobile-tab-icon { font-size: 18px; }
+
+  /* ── ANIMATIONS ── */
+  @keyframes pulse  { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes blink  { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    .sidebar { width: 280px; }
+    .form-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 700px) {
+    html, body { overflow: auto; }
+
+    header { padding: 0 14px; height: 48px; }
+    .logo { font-size: 0.9rem; gap: 8px; }
+    .logo-icon { width: 24px; height: 24px; font-size: 0.55rem; }
+    .btn-text.docs-btn { display: none; }
+    .user-name { display: none; }
+    .logo-text { display: none; }
+
+    .app-container { flex-direction: column; overflow: visible; min-height: 0; }
+
+    /* Tab-based mobile layout */
+    .sidebar {
+      width: 100%; border-right: none; border-bottom: 1px solid var(--border);
+      flex-shrink: 0; overflow-y: auto;
+      padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 8px);
+    }
+    .sidebar.mobile-hidden { display: none; }
+    .main-content.mobile-hidden { display: none; }
+    .main-content {
+      padding: 16px; overflow: auto; flex: 1;
+      padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 8px); /* room for tab bar */
+    }
+
+    .mobile-tabs { display: block; }
+
+    /* Sidebar adjustments */
+    .panel-header { padding: 14px 16px; font-size: 0.9rem; }
+    .panel-section { padding: 14px 16px; }
+    .dropzone { padding: 22px 16px; }
+    .drop-icon { width: 44px; height: 44px; font-size: 20px; }
+    .printer-list { max-height: 200px; }
+    .btn-submit { padding: 14px; font-size: 0.9rem; margin-bottom: 8px; }
+
+    /* Main content adjustments */
+    .content-header { flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+    .page-title { font-size: 1rem; }
+    .summary-row { width: 100%; overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; gap: 6px; padding-bottom: 4px; }
+    .sum-pill { flex-shrink: 0; padding: 6px 12px; font-size: 0.65rem; }
+
+    .controls { gap: 6px; margin-bottom: 10px; }
+    .search-input { width: 100%; flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px; }
+    .refresh-btn { padding: 10px 12px; margin-left: 0; }
+    .last-sync { width: 100%; order: 3; }
+
+    /* Table: card-style layout on mobile */
+    .table-container { border: none; background: transparent; overflow: visible; }
+    table, thead, tbody, th, td, tr { display: block; }
+    thead { display: none; }
+    tbody { display: flex; flex-direction: column; gap: 8px; }
+    tr {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 14px; display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+      gap: 10px 12px;
+    }
+    tr:hover { background: var(--surface); }
+    td { padding: 0; border: none; }
+
+    /* Printer name + status in top row */
+    td:nth-child(1) { grid-column: 1; grid-row: 1; }
+    td:nth-child(2) { grid-column: 2; grid-row: 1; display: flex; align-items: flex-start; justify-content: flex-end; }
+
+    /* Ink + Jobs in bottom row */
+    td:nth-child(3) { grid-column: 1; grid-row: 2; }
+    td:nth-child(4) { grid-column: 2; grid-row: 2; display: flex; align-items: flex-end; justify-content: flex-end; }
+
+    .td-printer { min-width: 0; }
+    .p-name { max-width: none; font-size: 0.88rem; }
+    .jobs-cell { min-width: 0; max-width: none; }
+    .empty-row td { grid-column: 1 / -1; }
+
+    /* Toast */
+    .toast { bottom: calc(60px + env(safe-area-inset-bottom, 0px)); right: 12px; left: 12px; text-align: center; }
+
+    /* Prevent iOS zoom on inputs */
+    .select-box, .printer-search, input[type="text"], input[type="search"] { font-size: 16px; }
+  }
+
+  /* Extra small (iPhone SE etc.) */
+  @media (max-width: 380px) {
+    header { padding: 0 10px; }
+    .main-content { padding: 12px; padding-bottom: 72px; }
+    .panel-section { padding: 12px; }
+    tr { padding: 12px; gap: 8px; }
+    .sum-pill { padding: 5px 8px; font-size: 0.6rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- RESTRICTED OVERLAY -->
+<div id="restrictedOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#07090f;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;">
+  <div style="font-family:'Space Mono',monospace;font-size:0.7rem;letter-spacing:0.2em;color:#ff4d6a;text-transform:uppercase;margin-bottom:24px;">Access Denied</div>
+  <div style="font-size:3.5rem;font-weight:800;color:#ffffff;font-family:'Syne',sans-serif;letter-spacing:-0.02em;line-height:1.1;max-width:600px;">You are restricted<br>from printing.</div>
+  <div style="margin-top:20px;font-family:'Space Mono',monospace;font-size:0.78rem;color:#6b7a8d;max-width:420px;line-height:1.7;">Your account has been restricted by an administrator. Contact support if you believe this is a mistake.</div>
+  <button onclick="localStorage.removeItem('token');window.location.reload();" style="margin-top:40px;background:none;border:1px solid #1e2a3a;color:#6b7a8d;font-family:'Space Mono',monospace;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;padding:10px 24px;cursor:pointer;">Sign Out</button>
+</div>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">
+      <svg width="17" height="14" viewBox="0 0 17 14" fill="none" aria-hidden="true">
+        <path d="M13.2 5.6A4.7 4.7 0 0 0 4.4 6.4 3.1 3.1 0 1 0 4 12.6h9.2a3.1 3.1 0 0 0 0-6.2c0-.28-.01-.54-.02-.8Z" fill="currentColor" opacity="0.35"/>
+        <path d="M8.5 13V8.5m0 0L6.5 10.5m2-2 2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <span class="logo-text">Cloud<span>-Printing</span></span>
+  </div>
+  <div class="header-actions">
+    <button class="btn-text docs-btn" onclick="alert('Docs coming soon')">Documentation</button>
+    <button class="nav-signin" id="signInBtn" onclick="window.location.href='/auth'" style="background:transparent;color:var(--text);border:1px solid var(--border);padding:6px 16px;font-family:'Syne',sans-serif;font-weight:700;font-size:0.75rem;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;">Sign In</button>
+    <div class="user-profile" id="userPill" style="display:none;">
+      <div class="avatar" id="avatarContainer">
+        <span id="userAvatarFallback" style="display:none;"></span>
+        <img id="userAvatar" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:none;">
+      </div>
+      <span class="user-name" id="userName"></span>
+    </div>
+    <button class="btn-text" id="adminBtn" onclick="window.location.href='/admin'" style="display:none;color:var(--cyan);border:1px solid var(--cyan);padding:4px 12px;">Admin</button>
+    <button class="btn-text" id="logoutBtn" onclick="logout()" style="display:none;color:var(--muted);">Sign Out</button>
+  </div>
+</header>
+
+<!-- APP LAYOUT -->
+<div class="app-container">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebarPanel">
+    <div class="panel-header">New Print Job</div>
+
+    <!-- Upload -->
+    <div class="panel-section">
+      <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()"
+        ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+        <div class="drop-icon">📄</div>
+        <div style="font-weight:700;font-size:0.88rem;">Drop your file here</div>
+        <div style="color:var(--muted);font-size:0.78rem;margin-top:4px;">or click to browse</div>
+        <div style="font-family:'Space Mono',monospace;font-size:0.58rem;color:var(--muted);margin-top:10px;">PDF · DOC · PNG · JPG</div>
+      </div>
+      <input type="file" id="fileInput" hidden accept=".pdf,.doc,.docx,.png,.jpg,.jpeg">
+      <div class="file-preview" id="filePreview">
+        <div id="fileName" style="font-weight:700;font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">—</div>
+        <div id="fileSize" style="font-family:'Space Mono',monospace;font-size:0.65rem;color:var(--muted);margin-left:6px;flex-shrink:0;"></div>
+        <button onclick="removeFile()" style="margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:1rem;">✕</button>
+      </div>
+    </div>
+
+    <!-- Configuration -->
+    <div class="panel-section">
+      <div class="opt-label">Configuration</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <div class="opt-label" style="font-size:0.55rem;">Copies</div>
+          <div class="qty-control">
+            <button class="qty-btn" onclick="changeQty(-1)">−</button>
+            <div class="qty-display" id="qtyDisplay">1</div>
+            <button class="qty-btn" onclick="changeQty(1)">+</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="opt-label" style="font-size:0.55rem;">Size</div>
+          <select class="select-box" id="paperSize">
+            <option>A4</option>
+            <option>Letter</option>
+            <option>A3</option>
+            <option>Legal</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <div class="opt-label" style="font-size:0.55rem;">Color Mode</div>
+          <select class="select-box" id="colorMode">
+            <option>Color</option>
+            <option>Black & White</option>
+            <option>Grayscale</option>
+          </select>
+        </div>
+        <div class="form-group" style="display:flex;align-items:flex-end;">
+          <div class="toggle-row" style="width:100;">
+            <span style="font-size:0.78rem;color:var(--muted);">Two-Sided</span>
+            <div class="toggle" id="duplexToggle" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Printer Selection -->
+    <div class="panel-section" style="border-bottom:none;flex:1;display:flex;flex-direction:column;">
+      <div class="opt-label">Select Printer</div>
+      <input class="printer-search" placeholder="Search printers…" oninput="filterPrinters(this.value)">
+      <div class="printer-list" id="printerList"></div>
+      <button class="btn-submit" id="orderBtn" disabled onclick="placeOrder()">Select File & Printer</button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content" id="monitorPanel">
+    <div class="content-header">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h1 class="page-title">System Monitor</h1>
+          <div class="live-badge"><span class="live-dot"></span>LIVE</div>
+        </div>
+        <div class="page-subtitle">Real-time status of connected hardware</div>
+      </div>
+      <div class="summary-row">
+        <div class="sum-pill active" onclick="setFilter('all',this)">
+          <span class="sum-num cyan" id="sumAll">—</span><span class="sum-label">All</span>
+        </div>
+        <div class="sum-pill" onclick="setFilter('online',this)">
+          <span class="sum-num green" id="sumOnline">—</span><span class="sum-label">Online</span>
+        </div>
+        <div class="sum-pill" onclick="setFilter('busy',this)">
+          <span class="sum-num cyan" id="sumBusy">—</span><span class="sum-label">Busy</span>
+        </div>
+        <div class="sum-pill" onclick="setFilter('warning',this)">
+          <span class="sum-num yellow" id="sumWarning">—</span><span class="sum-label">Warn</span>
+        </div>
+        <div class="sum-pill" onclick="setFilter('offline',this)">
+          <span class="sum-num red" id="sumOffline">—</span><span class="sum-label">Off</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <input class="search-input" id="statusSearch" placeholder="Search printers…" oninput="renderTable()">
+      <span class="last-sync" id="lastSync">Synced just now</span>
       <button class="refresh-btn" onclick="refreshAll()"><span class="refresh-icon">↻</span> Refresh</button>
     </div>
 
