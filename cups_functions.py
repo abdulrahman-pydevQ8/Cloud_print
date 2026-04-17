@@ -30,7 +30,6 @@ class PrinterScanner:
     # Added to fix the 'FutureWarning'
     def update_service(self, zc, type_, name):
         pass
-
     # Added to handle printer removal if needed
     def remove_service(self, zc, type_, name):
         pass
